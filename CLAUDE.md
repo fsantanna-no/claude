@@ -34,3 +34,7 @@ Substitute <name> as follows:
 git worktree remove ../<name>
 git branch -D ai/<name>         # if above succeeds
 ```
+
+# Extra
+
+- Never execute tests. Let me do this step by hand.
