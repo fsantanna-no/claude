@@ -24,7 +24,7 @@ reconciles three paradigms:
     - `1 + 2*3` becomes `1 + (2*3)`
 - Statements as expressions:
     - even complex statements evaluate to final value(s)
-    - `val (x,y) = match ... { ... }`
+    - `val x,y = match ... { ... }`
 - Pattern matching:
     - `match` if possible
         - avoid `else` if possible to exhaust cases
