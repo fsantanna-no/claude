@@ -5,6 +5,7 @@ applications based on SDL.
 
 - `pico-sdl`: https://github.com/fsantanna/pico-sdl/
 - `pico-lua`: https://github.com/fsantanna/pico-sdl/tree/main/lua/
+- API: https://github.com/fsantanna/pico-sdl/blob/main/lua/doc/api.md
 
 # Idioms and Caveats:
 
