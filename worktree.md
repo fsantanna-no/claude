@@ -17,13 +17,13 @@ Parse the arguments: first word is the action (`add` or `rem`), second word is t
 
 ## For `rem <name>`:
 
-1. Run: `git log --oneline --merges main | head -1 | grep ai/<name>
+1. Run: `git merge-base --is-ancestor ai/<name> main`
     - check `$?` result
-        - if `0`, ok
+        - if `0`, ok (branch was merged into main)
         - otherwise, stop and report error to the user
-1. Run: `git worktree remove ../<name>`
+2. Run: `git worktree remove ../<name>`
     - if error, stop and report the error to the user as-is
-2. Run: `git branch -D ai/<name>`
+3. Run: `git branch -D ai/<name>`
     - if error, stop and report the error to the user as-is
 
 ## Error handling
