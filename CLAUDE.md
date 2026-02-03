@@ -4,10 +4,18 @@
 
 # Plan Mode Workflow
 
+- Starts in Plan Mode.
 - Always enter plan mode before making any file edits.
 - Never edit files without explicit user authorization.
 - Just before edit, you should make one last suggestion.
-- After completing authorized edits, return to plan mode automatically.
+- After completing authorized edits
+    - print a summary of places changed:
+        - "<file>:<line> | place | description"
+        - place can be a function, data structure, etc
+    - return to plan mode automatically
+        - **take this step very seriously**
+        - show a message "I'm back to plan mode..."
+- Remain in Plan Mode.
 
 # Tests
 
