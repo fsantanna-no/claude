@@ -5,13 +5,20 @@
 - As soon as `claude` starts, it should permanently change the terminal title
   to `"[CC] <current directory>"`.
 
+# Language
+
+- **English**: All answers, comments, and any other kind of output should be in
+    English.
+- I may chat and prompt in Portuguese. Nevertheless, the answers must be in
+    English.
+
 # Persistent Plans
 
 A repository can save persistent plans in `.claude/*`, e.g.:
 
 - `.claude/feature.md`
 
-Plan can be mentioned and should be be updated during sessions.
+Plan may be mentioned and should be updated during sessions.
 
 # Plan Mode Workflow
 
