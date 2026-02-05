@@ -64,7 +64,7 @@ the fields. `pico.pop` restores the previous state.
     - parse table argument
     - for each recognized field, call the corresponding C setter
     - supported fields: `alpha`, `color` (`clear`/`draw`),
-      `style`, `crop`, `font`, `layer`, `expert`
+      `style`, `crop`, `font`
 - Attach a metatable with `__call = l_set_all` to the
   `pico.set` table so both syntaxes work
 
@@ -82,7 +82,7 @@ the fields. `pico.pop` restores the previous state.
 
 ## Status
 
-- [ ] Step 1 -- C push/pop
-- [ ] Step 2 -- Lua `pico.set` all
-- [ ] Step 3 -- Lua push/pop
-- [ ] Step 4 -- Tests
+- [x] Step 1 -- C push/pop
+- [x] Step 2 -- Lua `pico.set` all
+- [x] Step 3 -- Lua push/pop
+- [x] Step 4 -- Tests
