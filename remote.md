@@ -14,11 +14,7 @@
     - Ask me for credentials when about to create the PR.
 - Clone the `[work]` repository locally:
     - It must persist during the whole session.
-- First, prepare and save a plan in file `.claude/<plan>.md`:
-    - Ask for the name, if not given.
-    - It will become part of the PR.
-    - It must be updated whenever the plan is modified.
-- Last, pull main branch to check if there are any glitches.
+- Before the PR, pull main branch to check if there are any glitches.
 - Always use English:
     - In all answers, comments, code, or any other kind of output.
     - Even is I write in Portugues, everything must translate to English.
