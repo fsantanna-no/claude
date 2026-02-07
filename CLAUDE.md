@@ -1,9 +1,36 @@
-- Update `CLAUDE.md` when necessary.
+- Update `CLAUDE.md` when necessary
     - global at `~/.claude/CLAUDE.md`
     - local at `.claude/CLAUDE.md`
 
+- Read @remote.md, if running from the Web interface (https://claude.ai/code/)
+    - ignore if running from Claude CLI
+
+- Stay in "Plan Mode". Always. After any edits, go back to "Plan Mode".
+
+<!--
 - As soon as `claude` starts, it should permanently change the terminal title
   to `"[CC] <current directory>"`.
+-->
+
+# Persistent Plans
+
+- Each session has an associated plan `.claude/plan/<name>.md`
+    - On startup, ask for `<name>`
+- The plan must be continuously updated during sessions
+- The plan should keep pending commands/actions that were not applied yet
+
+# Plan Mode Workflow
+
+- Always remain in "Plan Mode".
+- Never edit files without explicit user authorization.
+- Make suggestions/corrections/alerts before edits.
+- After completing authorized edits
+    - print a summary of places changed:
+        - "<file>:<line> | place | description"
+        - place can be a function, data structure, etc
+        - use 1 line fore each change
+    - return to plan mode automatically
+        - show a message "I'm back to plan mode..."
 
 # Language
 
@@ -12,34 +39,10 @@
 - I may chat and prompt in Portuguese. Nevertheless, the answers must be in
     English.
 
-# Persistent Plans
-
-A repository can save persistent plans in `.claude/*`, e.g.:
-
-- `.claude/feature.md`
-
-Plan may be mentioned and should be updated during sessions.
-
-# Plan Mode Workflow
-
-- Starts in Plan Mode.
-- Always enter plan mode before making any file edits.
-- Never edit files without explicit user authorization.
-- Just before edit, you should make one last suggestion.
-- After completing authorized edits
-    - print a summary of places changed:
-        - "<file>:<line> | place | description"
-        - place can be a function, data structure, etc
-        - use 1 line fore each change
-    - return to plan mode automatically
-        - **take this step very seriously**
-        - show a message "I'm back to plan mode..."
-- Remain in Plan Mode.
-
 # Tests
 
 - Never execute tests automatically.
-- Ask me if prefer to do this step by hand.
+- Ask me if I prefer to test by hand.
 
 # Code Style
 
@@ -60,6 +63,6 @@ if (...) {
     ...
     return ...;
 } else {
-    ...     // indent event with return above
+    ...     // indent even with return above
 }
 ```
