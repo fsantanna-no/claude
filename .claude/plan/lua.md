@@ -3,19 +3,24 @@
 ## Goal
 Simplest possible page running Lua 5.4 via wasmoon.
 
+## PR
+- https://github.com/atmos-lang/web/pull/1
+- Branch: `lua-wasmoon`
+
 ## Tasks
-- [ ] Create `index.html` with wasmoon from CDN
-- [ ] Initialize Lua 5.4 VM in JavaScript
-- [ ] Redirect Lua `print` to a `<pre>` output area
-- [ ] Run a basic Lua script (print "hello")
-- [ ] Verify `<close>` works (to-be-closed variables)
-- [ ] Verify `coroutine.close()` works
-- [ ] Minimal UI: textarea for Lua code + "Run" button + output
+- [x] Create `index.html` with wasmoon from CDN (jsdelivr)
+- [x] Initialize Lua 5.4 VM in JavaScript
+- [x] Redirect Lua `print` to a `<pre>` output area
+- [x] Run a basic Lua script (print "hello")
+- [x] Verify `<close>` works (to-be-closed variables)
+- [x] Verify `coroutine.close()` works
+- [x] Minimal UI: textarea for Lua code + "Run" button + output
 
 ## Constraints
 - Single `index.html` file, no bundler
 - Plain HTML + inline JS
-- Load wasmoon from CDN (unpkg or jsdelivr)
+- Load wasmoon from CDN (jsdelivr +esm)
 
 ## Pending
-- (nothing yet)
+- Test in browser (user should verify)
+- Merge PR
