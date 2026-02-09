@@ -3,20 +3,29 @@
 ## Goal
 Compile and run `.atm` code entirely in the browser.
 
-## Tasks
-- [ ] Fetch atmos-lang/atmos compiler Lua sources
-- [ ] Fetch lua-atmos/atmos runtime Lua sources
-- [ ] Load compiler into wasmoon VM (lexer, parser, coder)
-- [ ] Load runtime into wasmoon VM
-- [ ] Compile `.atm` source to Lua inside the browser
-- [ ] Execute compiled Lua with the runtime
-- [ ] Adapt `atmos.env.clock` for browser
-      (requestAnimationFrame / setTimeout)
-- [ ] UI: editor for `.atm` code + output + "Run" button
-- [ ] Test with Atmos "Hello World" example
+## PR
+- https://github.com/atmos-lang/web/pull/2
+- Branch: `atmos-wasmoon`
 
-## Dependencies
-- PR 1 (Lua in the browser via wasmoon)
+## Tasks
+- [x] Copy atmos-lang/atmos compiler Lua sources to lua/
+- [x] Copy lua-atmos/atmos runtime Lua sources to lua/
+- [x] Copy f-streams library to lua/
+- [x] Load all modules via package.preload in wasmoon
+- [x] Compile .atm source with atm_loadstring
+- [x] Execute compiled Lua with atmos.call
+- [x] Adapt atmos.env.clock for browser (Date.now())
+- [x] UI: editor for .atm code + output + Run button
+- [x] Default: Hello World with watching/every
+
+## Architecture
+- lua/ dir contains all Lua sources (16 files)
+- JS fetches all files, registers in package.preload
+- Compilation: atm source -> atm_loadstring -> Lua function
+- Execution: atmos.call(f) runs the event loop synchronously
+- Clock: now_ms() global injected from JS (Date.now())
 
 ## Pending
-- (nothing yet)
+- Test in browser (user should verify)
+- Merge PR
+- Known limitation: synchronous execution blocks UI
