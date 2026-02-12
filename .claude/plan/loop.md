@@ -52,8 +52,15 @@ events to propagate back to the caller instead of terminating.
 - Not yet implemented; will call `event_from_sdl(..., 0)` so
   `SDL_QUIT` propagates as a regular event instead of terminating.
 
+## Workflow
+
+- All code commits go to `pico-sdl` repo (new branch → PR)
+- Plan file also committed to `pico-sdl` repo
+
 ## Status
 
 - [x] Discuss parameter name (`do_exit` chosen)
+- [ ] Copy plan file into `pico-sdl` repo
 - [ ] Apply edits to `src/pico.c`
-- [ ] Commit & push
+- [ ] Commit & push to new branch in `pico-sdl`
+- [ ] Create PR
