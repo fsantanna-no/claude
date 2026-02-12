@@ -64,6 +64,4 @@ events to propagate back to the caller instead of terminating.
 - [x] Commit & push to branch `do-exit-param` in `pico-sdl`
 - [x] Create PR: https://github.com/fsantanna/pico-sdl/pull/90
 
-## Pending (future)
-
-- [ ] Implement `pico_input_loop` passing `do_exit=0`
+- [x] Implement `pico_input_loop` passing `do_exit=0` (pushed to `do-exit-param`)
