@@ -4,243 +4,259 @@
 
 ---
 
-## 1. What is ThorVG?
+## 0. Context: pico-sdl Rendering Architecture
 
-- Lightweight C++ vector graphics engine (~150KB binary)
-- MIT license, zero mandatory dependencies
-- Powers Tizen OS, Godot Engine, LVGL, dotLottie
-- Rendering backends: Software (CPU), OpenGL, WebGPU
-- Input formats: SVG, Lottie (animations), TVG (compact binary)
-- Has a complete **C API** (`thorvg_capi.h`) with opaque types
-- Built-in TTF font rendering (no FreeType needed)
-- Built-in SVG parser (no libxml needed)
-- Renders to a `uint32_t*` ARGB8888 buffer (SW backend)
+pico-sdl uses `SDL_Renderer` for ALL drawing. In test mode
+(`PICO_TESTS`) it explicitly uses `SDL_RENDERER_SOFTWARE`.
+In production it uses `SDL_RENDERER_ACCELERATED`.
 
----
+All primitives go through the SDL_Renderer API:
+- `SDL_RenderFillRect`, `SDL_RenderDrawLine`, etc. (SDL2)
+- `filledTrigonRGBA`, `filledEllipseRGBA`, etc. (SDL2_gfx)
 
-## 2. Current pico-sdl Rendering Architecture
+The default canvas is **100x100 logical pixels**. At this size
+CPU rasterization is trivially fast -- the GPU vs CPU
+distinction is irrelevant for performance.
 
-| Component       | Library      | Usage                          |
-|-----------------|-------------|--------------------------------|
-| Rect, Line, Pt  | SDL2 native | `SDL_RenderFillRect`, etc.     |
-| Tri, Oval, Poly | SDL2_gfx    | `filledTrigonRGBA`, etc.       |
-| Images          | SDL2_image  | `IMG_LoadTexture` (PNG/JPG)    |
-| Text            | SDL2_ttf    | `TTF_RenderText_Solid`         |
-| Video           | custom      | Y4M parser + `SDL_UpdateYUV`   |
-| Layers/Buffers  | SDL2 native | `SDL_CreateTexture` + targets  |
+The library draws to an off-screen `SDL_Texture` (`G.main.tex`)
+via `SDL_SetRenderTarget`, then composites to the window.
+Layers are additional `SDL_Texture` targets.
 
-All rendering goes through `SDL_Renderer` (hardware-accelerated or
-software). Drawing happens to off-screen `SDL_Texture` targets
-(layers), then composited to the window.
+**Key insight**: since pico-sdl already works with SW rendering
+and targets small canvases, ThorVG's CPU rasterization is NOT
+a performance downgrade. Both engines end up doing CPU work.
+This makes full replacement of SDL2_gfx viable.
 
 ---
 
-## 3. Integration Approach: SVG Support (Additive)
+## 1. SVG Support
 
-### How it would work
-
+### How
 ```
 SVG file --> ThorVG SwCanvas --> uint32_t[] buffer
          --> SDL_CreateTexture (ARGB8888)
          --> rendered as a layer (like images)
 ```
 
-ThorVG renders SVG to a pixel buffer. pico-sdl wraps that buffer
-as an `SDL_Texture` and draws it via the existing layer system.
-
-### New API
-
-```c
-pico_output_draw_svg(path, rect)   // like draw_image
-pico_layer_svg(name, path)         // like layer_image
-```
+Auto-detect by extension in `pico_output_draw_image()`:
+`.svg` routes to ThorVG, `.png`/`.jpg` routes to SDL2_image.
 
 ### Pros
-- **Minimal disruption** -- SVG becomes just another layer type
-- Reuses existing layer/hash/TTL infrastructure
-- SVG scales to any resolution without pixelation
-- Enables vector art, icons, logos in educational projects
-- ThorVG's SVG parser is built-in (no libxml dependency)
+- SVG becomes just another image format -- reuses layer/hash
+- Scalable to any resolution without pixelation
+- ThorVG's SVG parser is built-in (no libxml)
+- Enables vector art, icons, logos
 
 ### Cons
-- Adds ~150KB to binary size
-- SVG rendering is CPU-intensive (rasterized on load)
-- Re-rasterization needed on resize/zoom
-- Meson build system (ThorVG) vs Makefile (pico-sdl)
-  - can pre-build as static lib, or use pkg-config
-- C++ dependency (ThorVG core is C++, linked via C API)
+- Adds ~150KB binary size
+- CPU-intensive on first rasterization (cached after)
+- C++ link dependency (`-lstdc++`)
 
-### Verdict: **RECOMMENDED** -- low risk, high value
+### Verdict: **YES** -- low risk, high value
 
 ---
 
-## 4. Replacing SDL2_gfx Primitives with ThorVG
+## 2. Replace SDL2 Primitives
 
-### What SDL2_gfx provides today
+### Current deps for primitives
 
-| Primitive       | Filled               | Stroke               |
-|-----------------|---------------------|-----------------------|
-| Triangle        | `filledTrigonRGBA`  | `trigonRGBA`          |
-| Ellipse/Circle  | `filledEllipseRGBA` | `ellipseRGBA`         |
-| Polygon (N-gon) | `filledPolygonRGBA` | `polygonRGBA`         |
+| What           | Library   | Provides                    |
+|----------------|-----------|------------------------------|
+| Rect, Line, Pt | SDL2      | `SDL_RenderFillRect`, etc.  |
+| Tri, Oval, Poly| SDL2_gfx  | `filledTrigonRGBA`, etc.    |
 
-Rects, lines, and points use SDL2 native (NOT SDL2_gfx).
+SDL2_gfx provides only: aliased rendering, 1px stroke,
+solid fill, no transforms.
 
-### What ThorVG would provide instead
+### ThorVG replacement
 
-```c
-// Triangle via ThorVG path
-Tvg_Paint* shape = tvg_shape_new();
-tvg_shape_move_to(shape, x1, y1);
-tvg_shape_line_to(shape, x2, y2);
-tvg_shape_line_to(shape, x3, y3);
-tvg_shape_close(shape);
-tvg_shape_set_fill_color(shape, r, g, b, a);
-// or stroke:
-tvg_shape_set_stroke_width(shape, w);
-tvg_shape_set_stroke_color(shape, r, g, b, a);
+ThorVG renders ALL primitives (rect, line, tri, oval, poly,
+path) to a `uint32_t[]` buffer via SwCanvas. The buffer is
+uploaded to an `SDL_Texture` and composited.
 
-// Ellipse via ThorVG
-tvg_shape_append_circle(shape, cx, cy, rx, ry);
+Since pico-sdl already uses SW rendering (tests) and has
+small canvases (100x100 default), the CPU cost is negligible.
 
-// Rect via ThorVG (with optional rounded corners!)
-tvg_shape_append_rect(shape, x, y, w, h, rx, ry);
-```
+### What changes
+- Drop SDL2_gfx dependency entirely
+- Drop SDL2 native drawing calls (`SDL_RenderFillRect`, etc.)
+- All primitives rendered by ThorVG into a buffer
+- Buffer uploaded as texture per present cycle
 
-### Pros
-- **Drop SDL2_gfx dependency** entirely (-1 dependency)
-- **Anti-aliased rendering** -- ThorVG uses sub-pixel AA;
-  SDL2_gfx uses aliased integer rasterization
-- **Rounded rectangles** -- free with `append_rect(rx, ry)`
-- **Gradients** -- linear and radial fills on any shape
-- **Stroke features** -- configurable width, cap, join, dash
-  (SDL2_gfx stroke is always 1px)
-- **Bezier curves** -- `cubic_to()` for smooth paths
-- **Consistent quality** -- all primitives rendered by same
-  engine with same quality level
-- **Path operations** -- arbitrary vector paths, not just
-  preset shapes
+### What stays
+- SDL2 for: windowing, input, audio, texture management
+- SDL2_image for: PNG/JPG loading
+- SDL2_ttf for: text (unless also replaced, see section 6)
+- SDL2_mixer for: audio
 
-### Cons
-- **Performance model change:**
-  SDL2_gfx renders directly to `SDL_Renderer` (GPU path).
-  ThorVG SW renders to a CPU buffer, then must be uploaded
-  as a texture. This means:
-  - Extra CPU work for rasterization
-  - Extra GPU upload (`SDL_UpdateTexture`) per frame
-  - For simple shapes, SDL2_gfx is likely faster
-- **Rendering architecture mismatch:**
-  pico-sdl uses `SDL_Renderer` (retained GPU textures).
-  ThorVG SW uses CPU buffers. Every ThorVG draw would need:
-  1. Render to buffer (CPU)
-  2. Upload buffer to SDL_Texture (CPU->GPU)
-  3. SDL_RenderCopy to screen (GPU)
-  This is a CPU->GPU round-trip per primitive.
-- **Immediate mode vs retained mode:**
-  pico-sdl draws primitives immediately (fire-and-forget).
-  ThorVG builds a scene graph, then renders all at once.
-  Adapting pico-sdl's immediate API to ThorVG's retained
-  model requires either:
-  - (a) Building a scene graph per frame and flushing, or
-  - (b) Rendering each primitive individually (wasteful)
-- **No direct SDL_Renderer integration:**
-  ThorVG doesn't draw to `SDL_Renderer`. It draws to its
-  own buffer. This creates a fundamental impedance mismatch.
-- **Complexity increase** for what are currently 1-line calls
-
-### Verdict: **NOT RECOMMENDED as full replacement**
-
-The performance penalty and architectural mismatch make a full
-replacement impractical. However, ThorVG primitives could be
-used **selectively** for features SDL2_gfx can't do (see
-section 7).
+### Verdict: **YES** -- viable given SW rendering + small canvas
 
 ---
 
-## 5. Effect on Existing Raster-Based Operations
+## 3. Pros and Cons (Full Replacement)
 
-### 5.1 Layers
+### Pros
 
-**No impact.** Layers are `SDL_Texture` objects managed by
-`SDL_Renderer`. ThorVG integration would create new layers
-(SVG layers) that fit into the existing system. The layer
-hash, TTL cleanup, `pico_set_layer()`, `pico_output_draw_layer()`
-all work unchanged.
+**Quality gains:**
+- Anti-aliased rendering on all primitives (SDL2_gfx = aliased)
+- Rounded rectangles (`append_rect(rx, ry)`)
+- Gradient fills (linear, radial) on any shape
+- Bezier curves / arbitrary vector paths
+- Variable stroke width, cap, join, dash
+- Per-object rotation, flip, scale (impossible with SDL2_gfx)
+- Per-object opacity and blend modes
 
-An SVG layer would be created like a buffer layer:
-```
-ThorVG buffer --> SDL_CreateTexture --> stored as layer
-```
+**Architectural gains:**
+- Drop 1 dependency (SDL2_gfx)
+- Single rendering engine for everything (shapes + SVG + Lottie)
+- Consistent quality across all drawing operations
+- Scene graph enables composition, masking, effects
 
-### 5.2 Images (PNG/JPG)
+**New capabilities:**
+- SVG rendering
+- Lottie animations
+- Masking, clipping by arbitrary shapes
+- Blur, drop shadow, tint effects
 
-**No impact.** `IMG_LoadTexture()` continues to work for raster
-images. SVG would be a new format alongside PNG/JPG, not a
-replacement. Could optionally route `.svg` files through ThorVG
-in `pico_output_draw_image()` (auto-detect by extension).
+### Cons
 
-### 5.3 Buffers (Raw RGBA)
+**Architecture:**
+- Immediate mode mismatch: pico-sdl draws one primitive at a
+  time; ThorVG builds a scene graph then renders all at once.
+  Options:
+  - (a) Render each primitive individually (simple, wasteful)
+  - (b) Batch primitives per present cycle (efficient, complex)
+  - (c) Maintain a persistent ThorVG canvas sized to the
+    logical texture, render into it per-draw or per-present
+- Buffer upload overhead: `SDL_UpdateTexture()` per present.
+  At 100x100 = 40KB, this is negligible. At 1000x1000 = 4MB,
+  still fast for CPU.
 
-**No impact.** Raw pixel buffers (`Pico_Color_A[]`) go through
-`SDL_CreateRGBSurfaceWithFormatFrom()`. This path is independent.
+**Build:**
+- ThorVG is C++, pico-sdl is C. Requires `-lstdc++` at link.
+- ThorVG uses Meson; pico-sdl uses Makefile.
+  Must pre-build or use pkg-config.
+- ~150KB added to binary.
 
-ThorVG's output IS a raw RGBA buffer, so there's a natural
-bridge: ThorVG renders to buffer, buffer becomes texture.
-This is the same path buffers already use.
+**Rendering model:**
+- SDL2 native rect/line/point are extremely fast (direct
+  framebuffer writes in SW mode). ThorVG adds vector path
+  overhead even for trivial shapes. For 100x100 canvas this
+  doesn't matter, but it's architecturally heavier.
+- ThorVG renders to its own buffer, NOT to `SDL_Texture`
+  directly. All drawing must go through the buffer->texture
+  upload path. This means pico-sdl can't mix ThorVG and SDL2
+  drawing on the same texture without extra steps.
 
-### 5.4 Video (Y4M)
+**Text:**
+- If only primitives are replaced (not text), two rendering
+  engines coexist: ThorVG for shapes, SDL_ttf for text.
+  The present cycle must composite both.
 
-**No impact.** Video uses `SDL_PIXELFORMAT_YV12` with streaming
-textures and `SDL_UpdateYUVTexture()`. Completely separate path.
+### Summary: pros outweigh cons for an educational library
 
-### Summary
+The quality and feature gains are substantial. The performance
+costs are negligible at educational canvas sizes. The main
+complexity is the immediate-mode-to-scene-graph adaptation.
 
-| Component | Impact    | Reason                           |
+---
+
+## 4. Effect on Raster-Based Operations
+
+| Component | Impact    | Why                              |
 |-----------|-----------|----------------------------------|
-| Layers    | None      | SVG layers = new layer type      |
-| Images    | None      | SVG alongside PNG/JPG            |
-| Buffers   | None      | ThorVG output = RGBA buffer      |
-| Video     | None      | Separate YUV pipeline            |
-| Clear/BG  | None      | SDL_RenderClear unchanged        |
+| Layers    | None      | Layers remain `SDL_Texture`;     |
+|           |           | ThorVG output = new layer source |
+| Images    | None      | PNG/JPG still via SDL2_image     |
+| Buffers   | None      | `Pico_Color_A[]` unchanged;      |
+|           |           | ThorVG output IS an RGBA buffer  |
+| Video     | None      | Y4M/YUV pipeline untouched       |
+| Clear     | None      | `SDL_RenderClear` unchanged      |
 | Push/Pop  | None      | State stack unchanged            |
 
+ThorVG adds a new source of pixels (vector rendering) that
+feeds into the existing texture/layer system. All raster
+operations continue unchanged.
+
 ---
 
-## 6. Effect on Text Drawing
+## 5. New Capabilities (Not Currently Possible)
 
-### Current text system
-- `SDL_ttf` + embedded `tiny_ttf.h` fallback
-- Renders text to `SDL_Surface` then `SDL_Texture`
-- Cached as layers via hash/TTL
+| Capability            | Value  | ThorVG feature                  |
+|-----------------------|--------|---------------------------------|
+| SVG images            | High   | `tvg_picture_load("file.svg")`  |
+| Lottie animations     | High   | `tvg_picture_load("anim.json")` |
+| Rounded rectangles    | Medium | `tvg_shape_append_rect(rx, ry)` |
+| Gradient fills        | Medium | Linear + radial on any shape    |
+| Bezier paths          | Medium | `tvg_shape_cubic_to()`          |
+| Anti-aliased shapes   | Medium | Built-in sub-pixel AA           |
+| Variable stroke width | Medium | `tvg_shape_set_stroke_width()`  |
+| Stroke cap/join/dash  | Low    | Round, bevel, dash patterns     |
+| Per-shape transforms  | High   | Rotate/flip/scale any primitive |
+| Per-shape opacity     | Medium | Independent of global alpha     |
+| Blend modes (16)      | Medium | Multiply, screen, overlay, ...  |
+| Shape masking         | Low    | Alpha/luma masks on any paint   |
+| Shape clipping        | Low    | Clip by arbitrary path          |
+| Blur / drop shadow    | Low    | Scene-level post-processing     |
+| TVG binary format     | Low    | Compact pre-compiled vectors    |
 
-### ThorVG text capabilities
-- Built-in TTF loader (no FreeType, no SDL_ttf)
-- `tvg_text_new()`, `tvg_text_set_font()`, `tvg_text_set_text()`
-- Supports: font name, size, fill color, gradients
-- UTF-8 Unicode support
-- Text rendered as vector paths (scalable)
+---
 
-### Could ThorVG replace SDL_ttf?
+## 6. Text / Vector Fonts
 
-**Pros:**
-- Drop `SDL_ttf` dependency (-1 dependency)
-- Text scales without re-rasterization
-- Gradient fills on text (not possible with SDL_ttf)
-- Vector text = sharp at any zoom level
+### Current: SDL_ttf + FreeType
+- Renders glyphs as bitmaps (pixel-hinted)
+- Excellent small-text legibility (hinting aligns to pixel grid)
+- Cached as `SDL_Texture` via layer hash
+- Supports kerning, ligatures (via HarfBuzz), complex scripts
+- 20+ years mature
 
-**Cons:**
-- Same CPU buffer -> texture upload overhead
-- ThorVG text is newer/less mature than SDL_ttf
-- No `TTF_RenderText_Solid` equivalent (retained model)
-- Would need to rasterize text to buffer, then upload
-- Current caching via layer system works well already
+### ThorVG text: glyphs as vector paths
+- Built-in TTF loader (no FreeType, no SDL_ttf dependency)
+- Converts glyph outlines to ThorVG vector paths
+- Rasterized by ThorVG's general-purpose engine
 
-### Verdict: **POSSIBLE BUT LOW PRIORITY**
+### Are there better vector font formats?
 
-The current SDL_ttf approach works well and text is already
-cached as textures. Replacing it adds complexity for marginal
-benefit. However, ThorVG text could be offered as an
-**alternative** for vector-quality text when needed.
+**No.** TTF IS the standard vector font format. The outlines
+in TTF files are already Bezier curves (quadratic). ThorVG
+reads these outlines and converts them to its own cubic Bezier
+paths. OTF adds CFF (cubic Bezier) outlines but ThorVG doesn't
+support OTF yet (planned v2.0). SVG fonts are deprecated.
+
+The font format is not the issue. The issue is **hinting**.
+
+### Quality comparison
+
+| Aspect              | SDL_ttf (FreeType) | ThorVG text        |
+|---------------------|--------------------|--------------------|
+| Small text (8-14px) | Excellent (hinted) | Blurry (no hinting)|
+| Large text (24px+)  | Good               | Excellent          |
+| HiDPI displays      | Good               | Excellent          |
+| Gradient fill       | Impossible         | Supported          |
+| Stroke/outline      | Impossible         | Supported          |
+| Rotation/scale      | Impossible         | Supported          |
+| Per-glyph effects   | Impossible         | Supported          |
+| Kerning             | Yes                | Not yet            |
+| Ligatures           | Yes (HarfBuzz)     | Not yet            |
+| Complex scripts     | Yes                | Not yet            |
+
+### Verdict
+
+**For an educational library with small canvases (100x100):**
+- Text is typically large relative to canvas = ThorVG is fine
+- Hinting matters less when pixels are large/zoomed
+- Gradient/stroke/rotation on text is a real feature gain
+- BUT: ThorVG text is young, no kerning, no complex scripts
+
+**Recommendation: REPLACE SDL_ttf with ThorVG text.**
+The educational context (large text, simple scripts) plays
+to ThorVG's strengths. Gradient and rotation on text are
+genuine new capabilities. pico-sdl already uses an embedded
+`tiny_ttf.h` (stb-style), so the lack of hinting is
+consistent with the existing fallback approach.
+
+This would also drop SDL_ttf as a dependency.
 
 ---
 
@@ -248,569 +264,317 @@ benefit. However, ThorVG text could be offered as an
 
 ### Current situation
 
-**Layers** support all three via `SDL_RenderCopyEx`:
-- Rotation: 0-360 degrees, custom anchor point
-- Flip: horizontal, vertical, both
-- Scale: implicit via `view.dst` / `view.src` / `view.dim`
+| Object    | Rotation | Flip | Scale |
+|-----------|----------|------|-------|
+| Layers    | Yes      | Yes  | Yes   |
+| Rect      | No       | No   | No    |
+| Line      | No       | No   | No    |
+| Tri       | No       | No   | No    |
+| Oval      | No       | No   | No    |
+| Poly      | No       | No   | No    |
+| Text      | No       | No   | No    |
+| Image     | No       | No   | No*   |
 
-**Primitives** support NONE of these. SDL2_gfx functions
-(`filledTrigonRGBA`, `filledEllipseRGBA`, etc.) take absolute
-pixel coordinates and render immediately with no transform
-parameters. There is no way to rotate a triangle or flip an
-ellipse.
+*Images scale via destination rect, but don't support
+rotation or flip independently.
 
-### What ThorVG enables
+SDL2_gfx takes absolute pixel coordinates. There is no
+transform parameter. Impossible to rotate a triangle.
 
-Every ThorVG paint object supports **per-object transforms**:
+### With ThorVG: every paint object gets transforms
 
 ```c
-// Convenience methods (compose internally):
 tvg_paint_translate(shape, tx, ty);
-tvg_paint_rotate(shape, degrees);  // clockwise
+tvg_paint_rotate(shape, degrees);
 tvg_paint_scale(shape, factor);
 
 // OR full 3x3 affine matrix:
-Tvg_Matrix m = {
-    .e11 = cos_a, .e12 = -sin_a, .e13 = tx,
-    .e21 = sin_a, .e22 =  cos_a, .e23 = ty,
-    .e31 = 0,     .e32 = 0,      .e33 = 1
-};
+Tvg_Matrix m = { cos,-sin,tx, sin,cos,ty, 0,0,1 };
 tvg_paint_set_transform(shape, &m);
+
+// Flip = negative scale:
+// H-flip: scale(-1, 1) + translate(width, 0)
+// V-flip: scale(1, -1) + translate(0, height)
 ```
 
-**Flip** = scale with negative factor:
+### How to expose in pico-sdl
+
+Rotation already exists as state (`S.rotation`). It currently
+only applies to layers via `SDL_RenderCopyEx`. With ThorVG,
+the same state applies to all primitives:
+
 ```c
-// Horizontal flip around center:
-Tvg_Matrix flip_h = {
-    -1, 0, width,   // mirror X, translate back
-     0, 1, 0,
-     0, 0, 1
-};
+pico_set_rotation(45);
+pico_output_draw_rect(rect);  // rotated 45 degrees
 ```
 
-**Hierarchical transforms** via Scene containers:
-```c
-Tvg_Paint* scene = tvg_scene_new();
-tvg_paint_translate(scene, 100, 100);
-tvg_paint_rotate(scene, 45);
-tvg_scene_push(scene, child_shape); // child inherits
-```
+No new API needed -- existing `pico_set_rotation` and
+`pico_set_flip` simply apply to ThorVG paint objects.
 
-### How this maps to pico-sdl
-
-If primitives were rendered via ThorVG, they could support
-the same transforms as layers. Two approaches:
-
-**Approach A: Per-draw transforms (immediate style)**
-```c
-pico_set_rotation(45);          // state (push/pop aware)
-pico_output_draw_rect(rect);    // draws rotated rect
-pico_set_rotation(0);           // reset
-```
-
-**Approach B: Layer-based (current architecture)**
-Draw primitives into a ThorVG-backed layer, then transform
-the layer as usual. This already works -- you can draw into
-a layer and rotate the layer. ThorVG just makes the layer
-contents higher quality (AA, gradients, etc.).
-
-### Verdict
-
-ThorVG makes per-primitive rotation/flip/scale **possible**.
-But it only works for ThorVG-rendered primitives (not SDL2_gfx
-ones). This is a strong argument for using ThorVG for ALL
-primitive rendering if transforms are desired.
-
-**Trade-off**: transforms on primitives vs. performance.
+### Verdict: **major win** -- unifies transform behavior
 
 ---
 
-## 8. Other ThorVG Properties (Beyond Transforms)
+## 8. Other Properties
 
-### 8.1 Per-Object Opacity
+### Properties ThorVG adds to every paint object
 
-```c
-tvg_paint_set_opacity(shape, 128);  // 0-255
-```
-Currently pico-sdl has global `S.alpha` only. ThorVG allows
-**per-shape** opacity without changing global state.
+| Property      | Current (SDL2) | With ThorVG         |
+|---------------|----------------|---------------------|
+| Rotation      | Layers only    | **Any primitive**   |
+| Flip          | Layers only    | **Any primitive**   |
+| Scale         | Layers only    | **Any primitive**   |
+| Opacity       | Global only    | **Per-primitive**   |
+| Blend mode    | 1 (alpha)      | **16 modes**        |
+| Fill          | Solid only     | **Solid + gradient**|
+| Fill rule     | N/A            | **Even-odd / NZ**   |
+| Stroke width  | 1px            | **Any float**       |
+| Stroke cap    | N/A            | **Butt/round/sq**   |
+| Stroke join   | N/A            | **Miter/round/bvl** |
+| Stroke dash   | N/A            | **Arbitrary**       |
+| Clipping      | Rect only      | **Any shape**       |
+| Masking       | None           | **10 methods**      |
+| Anti-aliasing | None           | **Sub-pixel AA**    |
+| Effects       | None           | **Blur/shadow/tint**|
 
-### 8.2 Blend Modes (16 modes)
+### Which to expose in pico-sdl?
 
-```c
-tvg_paint_set_blend_method(shape, TVG_BLEND_METHOD_MULTIPLY);
-```
-- Normal, Multiply, Screen, Overlay
-- Darken, Lighten, ColorDodge, ColorBurn
-- HardLight, SoftLight, Difference, Exclusion
-- Hue, Saturation, Color, Luminosity, Add
+**Phase 1 (immediate, via state):**
+- `pico_set_stroke_width(float)` -- already issue #62
+- `pico_set_rotation(float)` -- extend to all primitives
+- `pico_set_flip(int)` -- extend to all primitives
 
-pico-sdl currently uses only `SDL_BLENDMODE_BLEND` (fixed).
-ThorVG unlocks compositing effects.
+**Phase 2 (new features):**
+- Gradient fills via `pico_set_color_gradient_*()`
+- Rounded rects via radius param on `pico_output_draw_rect()`
+- Bezier paths via `pico_output_draw_path()`
 
-### 8.3 Fill Rules
-
-```c
-tvg_shape_set_fill_rule(shape, TVG_FILL_RULE_EVEN_ODD);
-tvg_shape_set_fill_rule(shape, TVG_FILL_RULE_NON_ZERO);
-```
-Controls how overlapping sub-paths are filled. Important
-for complex polygons and SVG rendering. Not available in
-SDL2_gfx.
-
-### 8.4 Gradient Fills
-
-```c
-// Linear gradient
-Tvg_Gradient* grad = tvg_linear_gradient_new();
-tvg_linear_gradient_set(grad, x1, y1, x2, y2);
-Tvg_Color_Stop stops[2] = {
-    {0.0, 255, 0, 0, 255},   // red at start
-    {1.0, 0, 0, 255, 255}    // blue at end
-};
-tvg_gradient_set_color_stops(grad, stops, 2);
-tvg_shape_set_fill_gradient(shape, grad);
-
-// Radial gradient
-Tvg_Gradient* rgrad = tvg_radial_gradient_new();
-tvg_radial_gradient_set(rgrad, cx, cy, radius);
-```
-
-### 8.5 Stroke Properties
-
-| Property   | SDL2_gfx   | ThorVG                     |
-|------------|------------|----------------------------|
-| Width      | 1px only   | Any float value            |
-| Cap style  | none       | butt, round, square        |
-| Join style | none       | miter, round, bevel        |
-| Dash       | none       | arbitrary dash patterns    |
-| Trim       | none       | partial path rendering     |
-| Gradient   | none       | gradient stroke fill       |
-
-```c
-tvg_shape_set_stroke_width(shape, 3.0f);
-tvg_shape_set_stroke_cap(shape, TVG_STROKE_CAP_ROUND);
-tvg_shape_set_stroke_join(shape, TVG_STROKE_JOIN_ROUND);
-float dash[] = {10, 5, 3, 5};
-tvg_shape_set_stroke_dash(shape, dash, 4, 0);
-```
-
-### 8.6 Masking and Clipping
-
-```c
-// Clip: show only where clipper shape exists
-tvg_paint_set_clip(target, clipper_shape);
-
-// Mask: blend using alpha/luma of mask shape
-tvg_paint_set_mask_method(target, mask, TVG_MASK_METHOD_ALPHA);
-```
-Mask methods: alpha, inverse-alpha, luma, inverse-luma,
-add, subtract, intersect, difference.
-
-Currently pico-sdl has only rectangular clipping via
-`SDL_RenderSetClipRect`.
-
-### 8.7 Scene Effects
-
-```c
-// Gaussian blur
-tvg_scene_add_effect_gaussian_blur(scene, 10, 0, 0, 100);
-
-// Drop shadow
-tvg_scene_add_effect_drop_shadow(scene,
-    0, 0, 0, 128,    // shadow color (RGBA)
-    135, 5, 3, 100);  // angle, dist, sigma, quality
-
-// Tint
-tvg_scene_add_effect_tint(scene,
-    0, 0, 0,          // black point
-    255, 200, 100,     // white point
-    200);              // intensity
-```
-
-### 8.8 Visibility Toggle
-
-```c
-tvg_paint_set_visible(shape, false);  // hide without remove
-```
-Useful for show/hide without rebuilding the scene graph.
-
-### Summary: Property Comparison
-
-| Property        | SDL2/gfx  | ThorVG           |
-|-----------------|-----------|------------------|
-| Rotation        | Layers    | Any paint        |
-| Flip            | Layers    | Any paint        |
-| Scale           | Layers    | Any paint        |
-| Opacity         | Global    | Per-paint        |
-| Blend modes     | 1 mode    | 16 modes         |
-| Fill color      | Solid     | Solid + gradient |
-| Fill rule       | N/A       | Even-odd / NZ    |
-| Stroke width    | 1px       | Any float        |
-| Stroke cap      | N/A       | butt/round/sq    |
-| Stroke join     | N/A       | miter/round/bvl  |
-| Stroke dash     | N/A       | Arbitrary        |
-| Clipping        | Rect only | Any shape        |
-| Masking         | None      | 10 mask methods  |
-| Effects         | None      | Blur/shadow/tint |
-| Visibility      | N/A       | Per-paint toggle |
-| Anti-aliasing   | None      | Sub-pixel AA     |
+**Later:**
+- Blend modes, masking, effects (advanced, less educational)
 
 ---
 
 ## 9. How Exactly to Integrate ThorVG with SDL2
 
-### 9.1 Colorspace Match
+### 9.1 Colorspace
 
 ```
-TVG_COLORSPACE_ARGB8888  <-->  SDL_PIXELFORMAT_ARGB8888
+TVG_COLORSPACE_ARGB8888S  =  SDL_PIXELFORMAT_ARGB8888
 ```
-Byte-for-byte compatible. No conversion needed.
+Use straight alpha (`S` suffix). Byte-compatible with SDL.
+Straight alpha works with `SDL_BLENDMODE_BLEND` directly.
+Slight perf cost vs premultiplied, but simpler integration.
 
-**Alpha caveat**: ThorVG defaults to **premultiplied** alpha.
-SDL's `SDL_BLENDMODE_BLEND` expects **straight** alpha.
-Two options:
-- Use `TVG_COLORSPACE_ARGB8888S` (straight) -- simpler,
-  slight performance cost
-- Use premultiplied + custom SDL blend mode:
+### 9.2 Architecture Options
+
+**Option A: ThorVG as primary renderer (RECOMMENDED)**
+
+Replace the SDL_Renderer drawing path entirely for shapes.
+ThorVG renders into a buffer the size of the logical texture.
+The buffer is uploaded as `SDL_Texture` per present cycle.
+
+```
+                    pico-sdl
+                    ┌──────────────────────┐
+                    │   Logical Texture     │
+                    │   (100x100 default)   │
+                    └──────────┬───────────┘
+                               │
+              ┌────────────────┼──────────┐
+              │                │          │
+        ┌─────┴─────┐   ┌─────┴───┐  ┌───┴────┐
+        │  ThorVG   │   │ SDL2_img│  │ Video  │
+        │  SwCanvas │   │ PNG/JPG │  │ Y4M    │
+        │           │   └─────────┘  └────────┘
+        │ shapes    │
+        │ text      │
+        │ SVG       │
+        │ Lottie    │
+        └─────┬─────┘
+              │
+        uint32_t[] buffer (100x100 = 40KB)
+              │
+        SDL_UpdateTexture()
+              │
+        SDL_RenderCopy() to window
+```
+
+Flow:
+1. `pico_init`: create ThorVG SwCanvas, allocate buffer
+2. Each `pico_output_draw_*`: add/modify ThorVG paint objects
+3. `_pico_output_present`:
+   - `tvg_canvas_update()` + `tvg_canvas_draw()` + `tvg_canvas_sync()`
+   - `SDL_UpdateTexture()` to upload buffer
+   - `SDL_RenderCopy()` to window (handles phy/log scaling)
+4. `pico_close`: destroy canvas, free buffer
+
+**Option B: ThorVG as supplementary renderer**
+
+Keep SDL_Renderer for simple shapes (rect, line, point).
+Use ThorVG only for features SDL2 can't do (SVG, gradients,
+AA shapes, paths). Two rendering paths coexist.
+
+Pro: less change. Con: inconsistent quality, complex present.
+
+### 9.3 Immediate Mode Adaptation
+
+pico-sdl's immediate mode calls `_pico_output_present(0)`
+after each draw call (non-expert mode). With ThorVG:
+
+**Approach: rebuild scene per present**
+
 ```c
-SDL_BlendMode pm_blend = SDL_ComposeCustomBlendMode(
-    SDL_BLENDFACTOR_ONE,
-    SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-    SDL_BLENDOPERATION_ADD,
-    SDL_BLENDFACTOR_ONE,
-    SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-    SDL_BLENDOPERATION_ADD
-);
-SDL_SetTextureBlendMode(texture, pm_blend);
-```
-
-### 9.2 Integration Pattern for pico-sdl
-
-pico-sdl uses `SDL_Renderer` with `SDL_Texture` targets.
-The integration point is: **ThorVG renders to a buffer,
-buffer becomes an SDL_Texture.**
-
-```
-                     pico-sdl layer system
-                     ┌─────────────────────────┐
-                     │  SDL_Texture (layer)     │
-                     │  - hash key, TTL, view   │
-                     └───────────┬─────────────┘
-                                 │
-         ┌───────────────────────┼─────────────┐
-         │                       │             │
-    ┌────┴────┐           ┌──────┴───┐   ┌─────┴────┐
-    │ SDL2    │           │ SDL2_img │   │ ThorVG   │
-    │ native  │           │          │   │ SwCanvas │
-    │ rect/   │           │ PNG/JPG  │   │          │
-    │ line/pt │           │ loader   │   │ SVG/     │
-    └─────────┘           └──────────┘   │ Lottie/  │
-                                         │ shapes   │
-         SDL2_gfx                        └──────────┘
-    ┌─────────┐                              │
-    │ tri/    │                    uint32_t[] buffer
-    │ oval/   │                              │
-    │ poly    │                    SDL_UpdateTexture()
-    └─────────┘                              │
-                                       SDL_Texture
-```
-
-### 9.3 Concrete Code Pattern
-
-#### Initialization (once, in `pico_open`)
-
-```c
-#ifdef PICO_THORVG
-#include <thorvg_capi.h>
-
-static Tvg_Canvas* tvg_canvas = NULL;
-static uint32_t*   tvg_buffer = NULL;
-static int         tvg_w = 0, tvg_h = 0;
-
-static void thorvg_init (void) {
-    tvg_engine_init(TVG_ENGINE_SW, 0);
-}
-
-static void thorvg_term (void) {
-    if (tvg_canvas) {
-        tvg_canvas_destroy(tvg_canvas);
+// Each draw call adds a paint to the canvas:
+void pico_output_draw_rect (Pico_Rel_Rect* r) {
+    Pico_Abs_Rect abs = pico_cv_rect_rel_abs(r);
+    Tvg_Paint* shape = tvg_shape_new();
+    tvg_shape_append_rect(shape, abs.x, abs.y,
+                          abs.w, abs.h, S.rx, S.ry);
+    // Apply current state
+    tvg_shape_set_fill_color(shape, S.color.r,
+                             S.color.g, S.color.b, S.alpha);
+    if (S.rotation != 0) {
+        tvg_paint_rotate(shape, S.rotation);
     }
-    free(tvg_buffer);
-    tvg_engine_term(TVG_ENGINE_SW);
+    tvg_canvas_push(G.tvg_canvas, shape);
+
+    _pico_output_present(0);  // triggers render
 }
-#endif
 ```
 
-#### SVG Rendering (per-request, cached as layer)
-
 ```c
-static SDL_Texture* thorvg_render_svg (
-    const char* path, int w, int h
+// Present: render all accumulated paints
+void _pico_output_present (int
 ) {
-    // Resize buffer if needed
-    if (w != tvg_w || h != tvg_h) {
-        free(tvg_buffer);
-        tvg_buffer = calloc(w * h, sizeof(uint32_t));
-        tvg_w = w;
-        tvg_h = h;
-    } else {
-        memset(tvg_buffer, 0, w * h * sizeof(uint32_t));
-    }
+    tvg_canvas_update(G.tvg_canvas);
+    tvg_canvas_draw(G.tvg_canvas, true);  // clear + render
+    tvg_canvas_sync(G.tvg_canvas);
 
-    // Create or reconfigure canvas
-    if (tvg_canvas) {
-        tvg_canvas_destroy(tvg_canvas);
-    }
-    tvg_canvas = tvg_swcanvas_create();
-    tvg_swcanvas_set_target(
-        tvg_canvas, tvg_buffer, w, w, h,
-        TVG_COLORSPACE_ARGB8888S
-    );
+    SDL_UpdateTexture(G.main.tex, NULL, G.tvg_buffer,
+                      G.tvg_w * sizeof(uint32_t));
 
-    // Load SVG
-    Tvg_Paint* pic = tvg_picture_new();
-    tvg_picture_load(pic, path);
-    tvg_picture_set_size(pic, w, h);
-
-    // Render
-    tvg_canvas_push(tvg_canvas, pic);
-    tvg_canvas_draw(tvg_canvas, 1);
-    tvg_canvas_sync(tvg_canvas);
-
-    // Create SDL_Texture from buffer
-    SDL_Texture* tex = SDL_CreateTexture(
-        G.ren,
-        SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STATIC,
-        w, h
-    );
-    SDL_UpdateTexture(
-        tex, NULL, tvg_buffer,
-        w * sizeof(uint32_t)
-    );
-    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-
-    return tex;
+    // existing present logic (scale to window, grid, etc.)
+    SDL_SetRenderTarget(G.ren, NULL);
+    SDL_RenderCopy(G.ren, G.main.tex, &src, &dst);
+    _show_grid();
+    SDL_RenderPresent(G.ren);
+    SDL_SetRenderTarget(G.ren, G.main.tex);
 }
 ```
 
-#### Usage in pico_output_draw_image (auto-detect SVG)
+**Issue: accumulated state between presents.**
+Each `_pico_output_present` must re-render ALL paints drawn
+so far (since the canvas is cleared). Options:
+- (a) Keep all paints in the canvas across presents
+  (canvas grows, `clear=false` to preserve)
+- (b) Render each primitive independently
+  (wasteful but matches immediate model)
+- (c) Maintain a "committed" buffer and a "pending" buffer
+  (committed = screenshot of all previous draws)
+
+Option (a) is cleanest: never clear the canvas, only add.
+On `pico_output_clear()`, remove all paints and clear.
+
+### 9.4 Persistent Canvas Pattern
 
 ```c
-void pico_output_draw_image (const char* path, ...) {
-#ifdef PICO_THORVG
-    const char* ext = strrchr(path, '.');
-    if (ext && strcasecmp(ext, ".svg") == 0) {
-        // route to ThorVG
-        SDL_Texture* tex = thorvg_render_svg(path, w, h);
-        // ... store as layer, draw via SDL_RenderCopy ...
-        return;
-    }
-#endif
-    // existing PNG/JPG path via SDL2_image
-    IMG_LoadTexture(G.ren, path);
-    ...
-}
+// pico_output_clear:
+tvg_canvas_remove(G.tvg_canvas, NULL); // remove all paints
+// draw background color shape
+
+// pico_output_draw_rect:
+Tvg_Paint* shape = tvg_shape_new();
+// ... configure ...
+tvg_canvas_push(G.tvg_canvas, shape);
+
+// _pico_output_present:
+tvg_canvas_update(G.tvg_canvas);
+tvg_canvas_draw(G.tvg_canvas, false); // DON'T clear buffer
+tvg_canvas_sync(G.tvg_canvas);
+SDL_UpdateTexture(...);
 ```
 
-### 9.4 Build Integration (Makefile)
+With `draw(false)` (no clear), ThorVG only re-renders dirty
+regions. Previously drawn shapes remain in the buffer.
+This matches pico-sdl's single-buffer immediate model.
 
-```makefile
-# Optional ThorVG support
-ifdef THORVG
-    CFLAGS  += -DPICO_THORVG $(shell pkg-config --cflags thorvg)
-    LDFLAGS += $(shell pkg-config --libs thorvg)
-    # Or if using static lib:
-    # CFLAGS  += -DPICO_THORVG -I./thorvg/inc
-    # LDFLAGS += -L./thorvg/lib -lthorvg -lstdc++
-endif
-```
+### 9.5 Layer Integration
 
-### 9.5 Canvas Reuse Strategy
-
-For repeated rendering (animation loop), reuse the canvas:
+Each layer gets its own ThorVG canvas + buffer:
 
 ```c
-// Add paints, keep references
-tvg_canvas_push(canvas, shape);
-
-// Each frame: modify in place, re-render
-tvg_paint_translate(shape, new_x, new_y);
-tvg_canvas_update(canvas);      // recalc dirty regions
-tvg_canvas_draw(canvas, true);  // rasterize (clear buf)
-tvg_canvas_sync(canvas);        // block until done
-
-// Upload to SDL
-SDL_UpdateTexture(tex, NULL, buffer, stride);
+typedef struct {
+    SDL_Texture* tex;
+    Tvg_Canvas*  tvg;       // per-layer ThorVG canvas
+    uint32_t*    tvg_buf;   // per-layer buffer
+    // ... existing fields ...
+} Pico_Layer;
 ```
 
-For one-shot rendering (SVG loaded once, cached as texture):
-- Create canvas, render, destroy canvas
-- Keep only the SDL_Texture
+When `pico_set_layer(name)` switches the active layer,
+the active ThorVG canvas switches too. Drawing goes to
+that layer's canvas/buffer.
 
-### 9.6 Thread Safety Rules
+### 9.6 Build Integration
 
-- All ThorVG calls on **one thread** (main thread)
-- Internal parallelism via `tvg_engine_init(n_threads)`
-- Do NOT read buffer between `draw()` and `sync()`
-- Paint objects cannot be shared across canvases
-
----
-
-## 10. What is NOT Supported That COULD Be Supported
-
-With ThorVG, pico-sdl could gain these **new capabilities**:
-
-### 7.1 SVG Rendering (HIGH VALUE)
-- Load and display SVG files as scalable images
-- Vector icons, logos, UI elements
-- Resolution-independent graphics
-- `pico_output_draw_svg(path, rect)`
-
-### 7.2 Lottie Animations (HIGH VALUE)
-- Load and play Lottie JSON animations
-- Frame-based control (like video but vector)
-- Lightweight animated graphics
-- `pico_output_draw_lottie(path, rect)`
-- `pico_set_lottie(name, frame)`
-
-### 7.3 Rounded Rectangles (MEDIUM VALUE)
-- `tvg_shape_append_rect(x, y, w, h, rx, ry)`
-- Currently impossible with SDL2_gfx
-- Very common UI element
-- Could extend: `pico_output_draw_rect()` with radius param
-
-### 7.4 Gradient Fills (MEDIUM VALUE)
-- Linear and radial gradients on any shape
-- Color stops with arbitrary positions
-- Not possible with current SDL2_gfx
-- `pico_set_gradient_linear(x1,y1, x2,y2, stops)`
-- `pico_set_gradient_radial(cx,cy, r, stops)`
-
-### 7.5 Anti-Aliased Primitives (MEDIUM VALUE)
-- ThorVG uses sub-pixel anti-aliasing
-- SDL2_gfx primitives are aliased (jagged edges)
-- Could offer AA versions of tri, oval, poly
-
-### 7.6 Bezier Curves / Paths (MEDIUM VALUE)
-- Arbitrary vector paths with cubic beziers
-- `pico_output_draw_path(points, types)`
-- Not possible with current primitives
-
-### 7.7 Stroke Customization (LOW-MEDIUM VALUE)
-- Variable stroke width (currently always 1px)
-- Cap styles: butt, round, square
-- Join styles: miter, round, bevel
-- Dash patterns
-- `pico_set_stroke_width(w)`
-- `pico_set_stroke_cap(cap)`
-
-### 7.8 Masking and Clipping (LOW VALUE)
-- Arbitrary shape masks
-- Path-based clipping regions
-- Beyond current `SDL_RenderSetClipRect`
-
-### 7.9 Effects (LOW VALUE)
-- Blur, drop shadow, tint
-- Applied to any paint object
-- Heavy for educational use
-
-### 7.10 TVG Binary Format (LOW VALUE)
-- Pre-compiled vector graphics
-- Faster loading than SVG
-- Smaller file size (~30% less than SVG)
-- Asset pipeline optimization
-
----
-
-## 11. Recommended Integration Strategy
-
-### Phase 1: SVG Support (Additive, Low Risk)
-- Add ThorVG as optional dependency
-- Implement `pico_output_draw_svg()` / `pico_layer_svg()`
-- SVG rendered to buffer -> SDL_Texture -> layer
-- No changes to existing code paths
-- Build: `make THORVG=1` to enable
-
-### Phase 2: Lottie Animations (Additive, Low Risk)
-- Implement `pico_output_draw_lottie()`
-- Frame control similar to video API
-- Extends layer system with animation type
-
-### Phase 3: Enhanced Primitives (Selective, Medium Risk)
-- Add NEW functions (don't replace existing):
-  - `pico_output_draw_rrect()` -- rounded rect
-  - `pico_output_draw_path()` -- bezier paths
-  - `pico_set_gradient_*()` -- gradient fills
-  - `pico_set_stroke_width()` -- variable stroke
-- Keep SDL2_gfx for simple cases (performance)
-- Use ThorVG only for features SDL2_gfx can't do
-
-### NOT Recommended
-- Full replacement of SDL2_gfx (performance loss)
-- Full replacement of SDL_ttf (unnecessary complexity)
-- ThorVG GL backend (conflicts with SDL_Renderer)
-
----
-
-## 12. Build Integration Options
-
-### Option A: Pre-built Static Library
 ```makefile
-# Build ThorVG once:
-# meson setup build -Ddefault_library=static \
-#   -Dbindings=capi -Dloaders=svg,lottie,png \
-#   -Dengines=sw
-# ninja -C build
+# Build ThorVG as static lib (one-time):
+#   cd thorvg
+#   meson setup build -Ddefault_library=static \
+#     -Dbindings=capi -Dloaders=svg,lottie,ttf \
+#     -Dengines=sw -Dsavers=
+#   ninja -C build
 
-THORVG_CFLAGS = -I/path/to/thorvg/inc
-THORVG_LIBS = -L/path/to/thorvg/lib -lthorvg -lstdc++
+THORVG_INC = -I./thorvg/inc
+THORVG_LIB = -L./thorvg/build/src -lthorvg -lstdc++
+
+CFLAGS  += $(THORVG_INC)
+LDFLAGS += $(THORVG_LIB)
 ```
 
-### Option B: System Package
-```makefile
-THORVG_CFLAGS = $(shell pkg-config --cflags thorvg)
-THORVG_LIBS = $(shell pkg-config --libs thorvg)
-```
+### 9.7 Dependencies After Integration
 
-### Option C: Git Submodule
-```
-git submodule add https://github.com/thorvg/thorvg
-# Build as part of pico-sdl's Makefile
-```
+| Before            | After              |
+|-------------------|--------------------|
+| SDL2              | SDL2               |
+| SDL2_gfx          | --REMOVED--        |
+| SDL2_ttf          | --REMOVED-- (opt.) |
+| SDL2_image        | SDL2_image         |
+| SDL2_mixer        | SDL2_mixer         |
+| --                | ThorVG (static)    |
 
-Note: ThorVG is C++ so linking requires `-lstdc++` even
-when using the C API.
+Net: -1 or -2 deps, +1 dep. Total deps same or fewer.
 
 ---
 
-## 13. Summary Table
+## 10. Summary
 
-| Feature                | Effort | Value  | Risk | Recommend?     |
-|------------------------|--------|--------|------|----------------|
-| SVG rendering          | Low    | High   | Low  | YES            |
-| Lottie animations      | Low    | High   | Low  | YES            |
-| Rounded rectangles     | Low    | Medium | Low  | YES            |
-| Gradient fills         | Medium | Medium | Low  | YES            |
-| Anti-aliased prims     | Medium | Medium | Med  | SELECTIVE      |
-| Bezier paths           | Medium | Medium | Low  | YES            |
-| Stroke customization   | Low    | Low    | Low  | YES            |
-| Primitive transforms   | Medium | High   | Med  | YES (via TVG)  |
-| Blend modes (16)       | Low    | Medium | Low  | YES            |
-| Shape masking/clipping | Medium | Low    | Med  | LATER          |
-| Scene effects          | Medium | Low    | Med  | LATER          |
-| Replace SDL2_gfx       | High   | Low    | High | NO             |
-| Replace SDL_ttf        | High   | Low    | Med  | NO             |
-| ThorVG GL backend      | High   | Low    | High | NO             |
+| # | Topic                  | Verdict                         |
+|---|------------------------|---------------------------------|
+| 1 | SVG support            | YES -- add as image format      |
+| 2 | Replace SDL2 prims     | YES -- viable with SW rendering |
+| 3 | Pros/cons              | Pros outweigh at 100x100 canvas |
+| 4 | Raster ops impact      | None -- layers/images/video OK  |
+| 5 | New capabilities       | 15+ features unlocked           |
+| 6 | Text / vector fonts    | YES replace -- better for edu   |
+| 7 | Primitive transforms   | YES -- major win, unifies API   |
+| 8 | Other properties       | Gradients, stroke, blend, AA    |
+| 9 | SDL2 integration       | ThorVG as primary renderer      |
+
+### Recommended: Option A (full replacement)
+
+Replace SDL_Renderer drawing with ThorVG SwCanvas:
+- ThorVG renders shapes, text, SVG, Lottie to buffer
+- SDL2 handles windowing, input, audio, texture display
+- Drop SDL2_gfx (and optionally SDL2_ttf)
+- Persistent canvas with `draw(false)` for immediate mode
 
 ---
 
 ## Pending Actions
 
-- [ ] User decision: which phases to pursue
-- [ ] User decision: build integration approach (A/B/C)
-- [ ] Prototype SVG rendering path
-- [ ] Test ThorVG buffer -> SDL_Texture pipeline
-- [ ] Benchmark: ThorVG primitives vs SDL2_gfx
-- [ ] Design API extensions for new primitives
+- [ ] User decision: Option A (full) or Option B (supplementary)
+- [ ] Prototype: ThorVG buffer -> SDL_Texture at 100x100
+- [ ] Prototype: immediate mode with persistent canvas
+- [ ] Test: text quality at pico-sdl's typical sizes
+- [ ] Build: compile ThorVG as static lib with CAPI
