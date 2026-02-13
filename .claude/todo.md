@@ -107,3 +107,16 @@ use.
 ## Review and complete guide
 
 Review `lua/doc/guide.md` for completeness, accuracy, and missing sections.
+
+## ThorVG integration
+
+Replace SDL2_gfx (and optionally SDL2_ttf) with ThorVG as the primary
+rendering engine. ThorVG renders shapes, text, SVG, and Lottie to a CPU
+buffer that is uploaded as an SDL_Texture. Viable because pico-sdl already
+uses SW rendering and targets small canvases (100x100 default). Key wins:
+anti-aliased primitives, per-object transforms (full 3x3 affine — strictly
+more powerful than SDL_RenderCopyEx), gradients, rounded rects, bezier paths,
+variable stroke, SVG/Lottie support. Net dependency change: drop SDL2_gfx
+(+SDL2_ttf), add ThorVG static lib.
+
+See: `.claude/plan/thorvg.md`
