@@ -12,7 +12,7 @@
     - An issue link: `https://github.com/<user>/<repo>/issues/<N>`
     - An issue link already identifies the repository.
 - Ask me for the plan name (see `CLAUDE.md` / Persistent Plans).
-    - The plan should be added to `.claude/plans/<plan>.md`.
+    - The plan should be added to `[work]/.claude/plans/<plan>.md`.
 - The goal is to fix or prompt and make a pull request (PR) to `[work]`:
     - Ask me for credentials when about to create the PR.
 - Clone the `[work]` repository locally:
