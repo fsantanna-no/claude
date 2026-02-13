@@ -65,3 +65,4 @@ events to propagate back to the caller instead of terminating.
 - [x] Create PR: https://github.com/fsantanna/pico-sdl/pull/90
 
 - [x] Implement `pico_input_loop` passing `do_exit=0` (pushed to `do-exit-param`)
+- [x] Add Lua binding `pico.input.loop()` in `lua/pico.c` (pushed to `do-exit-param`)
