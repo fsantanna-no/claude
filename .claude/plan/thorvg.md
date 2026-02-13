@@ -266,30 +266,59 @@ This would also drop SDL_ttf as a dependency.
 
 | Object    | Rotation | Flip | Scale |
 |-----------|----------|------|-------|
-| Layers    | Yes      | Yes  | Yes   |
+| Layers    | Yes*     | Yes* | Yes*  |
 | Rect      | No       | No   | No    |
 | Line      | No       | No   | No    |
 | Tri       | No       | No   | No    |
 | Oval      | No       | No   | No    |
 | Poly      | No       | No   | No    |
 | Text      | No       | No   | No    |
-| Image     | No       | No   | No*   |
+| Image     | No       | No   | No**  |
 
-*Images scale via destination rect, but don't support
-rotation or flip independently.
+*Layer transforms use `SDL_RenderCopyEx`, which is strictly
+less powerful than ThorVG (see comparison below).
+**Images scale via destination rect only.
 
 SDL2_gfx takes absolute pixel coordinates. There is no
 transform parameter. Impossible to rotate a triangle.
+
+### Layer transforms (SDL) vs ThorVG transforms
+
+Even for layers, `SDL_RenderCopyEx` is limited:
+
+```c
+SDL_RenderCopyEx(ren, tex, &src, &dst, angle, &center, flip);
+//                                     ↑int   ↑1 point  ↑enum
+```
+
+| Capability          | SDL (`SDL_RenderCopyEx`)      | ThorVG paint               |
+|---------------------|-------------------------------|----------------------------|
+| Rotation            | Integer degrees, one anchor   | Float degrees, any anchor  |
+| Flip                | H, V, or both (enum)         | Arbitrary (via matrix)     |
+| Scale               | Uniform via dst rect resize   | Non-uniform (sx != sy)     |
+| Skew / Shear        | **No**                        | Yes (affine matrix)        |
+| Arbitrary matrix    | **No**                        | Full 3x3 affine           |
+| Compose transforms  | **No** — one rot + one flip   | Multiply matrices freely   |
+| Hierarchical        | **No**                        | Scene parent propagates    |
+| Sub-degree rotation | **No** (int only)             | Yes (float)                |
+
+`SDL_RenderCopyEx` can't skew, can't do non-uniform scale,
+can't compose multiple transforms, and can't do sub-degree
+precision. ThorVG transforms are strictly more powerful.
 
 ### With ThorVG: every paint object gets transforms
 
 ```c
 tvg_paint_translate(shape, tx, ty);
-tvg_paint_rotate(shape, degrees);
-tvg_paint_scale(shape, factor);
+tvg_paint_rotate(shape, 33.7f);   // float precision
+tvg_paint_scale(shape, 1.5f);
 
-// OR full 3x3 affine matrix:
-Tvg_Matrix m = { cos,-sin,tx, sin,cos,ty, 0,0,1 };
+// OR full 3x3 affine matrix (rotate + scale + skew):
+Tvg_Matrix m = {
+    sx*cos_a, -sin_a+shx, tx,
+    sin_a+shy, sy*cos_a,   ty,
+    0,         0,           1
+};
 tvg_paint_set_transform(shape, &m);
 
 // Flip = negative scale:
@@ -311,7 +340,13 @@ pico_output_draw_rect(rect);  // rotated 45 degrees
 No new API needed -- existing `pico_set_rotation` and
 `pico_set_flip` simply apply to ThorVG paint objects.
 
-### Verdict: **major win** -- unifies transform behavior
+### Verdict: **major win** -- unifies and upgrades transforms
+
+ThorVG transforms are strictly more powerful than SDL's
+`SDL_RenderCopyEx`, for both primitives AND layers. This
+unifies transform behavior across all drawing operations
+and adds capabilities (skew, non-uniform scale, float
+precision) that SDL cannot provide.
 
 ---
 
@@ -557,7 +592,8 @@ Net: -1 or -2 deps, +1 dep. Total deps same or fewer.
 | 4 | Raster ops impact      | None -- layers/images/video OK  |
 | 5 | New capabilities       | 15+ features unlocked           |
 | 6 | Text / vector fonts    | YES replace -- better for edu   |
-| 7 | Primitive transforms   | YES -- major win, unifies API   |
+| 7 | Transforms             | YES -- major win, unifies API;  |
+|   |                        | ThorVG strictly > SDL_RenderCopyEx |
 | 8 | Other properties       | Gradients, stroke, blend, AA    |
 | 9 | SDL2 integration       | ThorVG as primary renderer      |
 
@@ -568,6 +604,7 @@ Replace SDL_Renderer drawing with ThorVG SwCanvas:
 - SDL2 handles windowing, input, audio, texture display
 - Drop SDL2_gfx (and optionally SDL2_ttf)
 - Persistent canvas with `draw(false)` for immediate mode
+- Full affine transforms on ALL objects (not just layers)
 
 ---
 
