@@ -8,3 +8,8 @@
    - Should fetch from `atmos-lang/atmos` and `lua-atmos/atmos`
      repos at specific tags/versions
    - Use git tags (e.g., `v0.5`) for reproducible builds
+3. Reorganize repo structure
+   - `web/` — all deployable files (root for GitHub Pages)
+   - `web/lua/index.html` — Lua REPL without Atmos (PR 1)
+   - `web/atmos/index.html` — Atmos REPL (PR 2)
+   - Lua sources under `web/atmos/lua/` (or shared)
